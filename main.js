@@ -1,0 +1,494 @@
+const FRAME_SIZE = 32
+const NUM_FRAMES = 1024
+const CAPACITY = NUM_FRAMES * FRAME_SIZE
+const MASK = NUM_FRAMES - 1
+
+function fail(e) {
+  alert(e.message)
+}
+
+const vert = `
+#version 300 es
+
+void main() {
+vec2 ps[3] = vec2[3](
+        vec2(-1.0, -1.0),
+        vec2(3.0, -1.0),
+        vec2(-1.0, 3.0)
+    );
+
+gl_Position = vec4(ps[gl_VertexID], 0, 1);
+}
+`
+
+const fragBar = `
+#version 300 es
+
+#define FRAME_SIZE %
+#define MASK %
+#define PURPLE vec3(0.5, 0.0, 1.0)
+#define ORANGE vec3(1.0, 0.5, 0.0)
+#define BLACK vec3(0.1, 0.1, 0.1)
+
+precision highp float;
+precision highp sampler2D;
+precision highp int;
+
+uniform vec2 size;
+uniform sampler2D frames;
+uniform int head;
+uniform int tail;
+
+out vec4 fragColor;
+
+float bin(int freqIndex) {
+return texelFetch(frames, ivec2(head, freqIndex), 0).r;
+}
+
+float antialias(float d) {
+vec2 dxy = vec2(dFdx(d), dFdy(d));
+float width = length(dxy);
+float scale = width > 0. ? 1. / width : 1e7;
+return clamp(0.9 + 0.7 * scale * d, 0., 1.);
+}
+
+float sdBar(vec2 pos, int freqBin, float height) {
+float barWidth = 0.8 / float(FRAME_SIZE);
+float barSpacing = 1.0 / float(FRAME_SIZE);
+
+// Create a local position relative to the bar
+vec2 localPos = pos - vec2(
+            float(freqBin) * barSpacing + barWidth / 2.0, // Center x position
+            0.5 // Center y position
+        );
+
+// Define the bar size (width and height)
+vec2 barSize = vec2(barWidth, height);
+
+// Standard SDF box calculation using local position
+vec2 d = abs(localPos) - barSize / 2.0;
+return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0);
+}
+
+void main() {
+vec2 pos = gl_FragCoord.xy / size;
+
+// Find which frequency bin we're in
+int freqBin = int(pos.x * float(FRAME_SIZE));
+
+// Get the magnitude for this frequency
+float magnitude = bin(freqBin);
+
+float t = float(freqBin) / float(FRAME_SIZE);
+vec3 barColor = mix(PURPLE, ORANGE, t);
+vec3 col = mix(barColor, vec3(1), antialias(sdBar(pos, freqBin, magnitude)));
+fragColor = vec4(col, 1);
+}
+`
+
+const fragSpectral = `
+#version 300 es
+
+#define FRAME_SIZE %
+#define NUM_FRAMES %
+#define MASK %
+#define SAMPLES FRAME_SIZE * NUM_FRAMES
+#define PURPLE vec3(0.5, 0.0, 1.0)
+#define ORANGE vec3(1.0, 0.5, 0.0)
+
+precision highp float;
+precision highp sampler2D;
+
+uniform vec2 size;
+uniform sampler2D frames;
+uniform int head;
+uniform int tail;
+
+out vec4 fragColor;
+
+vec3 SRGBtoOKLAB(vec3 c) {
+float l = 0.4122214708 * c.r + 0.5363325363 * c.g + 0.0514459929 * c.b;
+float m = 0.2119034982 * c.r + 0.6806995451 * c.g + 0.1073969566 * c.b;
+float s = 0.0883024619 * c.r + 0.2817188376 * c.g + 0.6299787005 * c.b;
+
+float l_ = pow(l, 1.0 / 3.0);
+float m_ = pow(m, 1.0 / 3.0);
+float s_ = pow(s, 1.0 / 3.0);
+
+return vec3(
+    0.2104542553 * l_ + 0.7936177850 * m_ - 0.0040720468 * s_,
+    1.9779984951 * l_ - 2.4285922050 * m_ + 0.4505937099 * s_,
+    0.0259040371 * l_ + 0.7827717662 * m_ - 0.8086757660 * s_
+);
+}
+
+vec3 OKLABtoSRGB(vec3 c) {
+float l_ = c.x + 0.3963377774 * c.y + 0.2158037573 * c.z;
+float m_ = c.x - 0.1055613458 * c.y - 0.0638541728 * c.z;
+float s_ = c.x - 0.0894841775 * c.y - 1.2914855480 * c.z;
+
+float l = l_ * l_ * l_;
+float m = m_ * m_ * m_;
+float s = s_ * s_ * s_;
+
+return vec3(
+    4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
+    -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
+    -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s
+);
+}
+
+float bin(int frameIndex, int freqIndex) {
+return texelFetch(frames, ivec2(frameIndex & MASK, freqIndex), 0).r;
+}
+
+vec3 spectrogram(vec2 pos) {
+pos.x = (pos.x - 0.5) * 2.;
+
+int frameIndex = int(pos.x * float(NUM_FRAMES)) + tail;
+int freqIndex = int(pos.y * float(FRAME_SIZE));
+float magnitude = bin(frameIndex, freqIndex);
+
+// Convert base colors to OKLAB
+vec3 darkOKLAB = SRGBtoOKLAB(vec3(0.1));
+vec3 purpleOKLAB = SRGBtoOKLAB(PURPLE);
+vec3 orangeOKLAB = SRGBtoOKLAB(ORANGE);
+
+// Mix colors in OKLAB space
+vec3 gradientOKLAB = mix(purpleOKLAB, orangeOKLAB, pos.y);
+vec3 finalOKLAB = mix(darkOKLAB, gradientOKLAB, magnitude);
+
+// Convert back to SRGB for display
+return OKLABtoSRGB(finalOKLAB);
+}
+
+void main() {
+vec2 pos = gl_FragCoord.xy / size;
+
+// Add some contrast to make the visualization more visible
+float magnitude = bin(int(pos.x * float(NUM_FRAMES)) + tail,
+        int(pos.y * float(FRAME_SIZE)));
+magnitude = pow(magnitude, 0.5); // Square root to enhance quieter frequencies
+
+// Convert colors to OKLAB
+vec3 darkOKLAB = SRGBtoOKLAB(vec3(0.1)); // Dark background
+vec3 purpleOKLAB = SRGBtoOKLAB(PURPLE);
+vec3 orangeOKLAB = SRGBtoOKLAB(ORANGE);
+
+// Do the mixing in OKLAB space
+vec3 gradientOKLAB = mix(purpleOKLAB, orangeOKLAB, pos.y);
+vec3 finalOKLAB = mix(darkOKLAB, gradientOKLAB, magnitude);
+
+// Convert back to SRGB for display
+fragColor = vec4(OKLABtoSRGB(finalOKLAB), 1.0);
+}
+`
+
+const RingBuffer = class {
+  constructor(left, right) {
+    // Backing buffer - a webgl2 texture
+    this.bufs = [left, right]
+    // Holds one frame's worth of pixels, for copying to texture
+    this.texbuf = new Float32Array(FRAME_SIZE * 4, 0)
+    // Front of ringbuf
+    this.head = 0
+    // Back of ringbuf
+    this.tail = 0
+
+    this.size = 0
+    this.full = false
+  }
+
+  _copyright(frame) {
+    for (let i = 0, j = 0; j < this.size && i < this.texbuf.length; i += 4, j++) {
+      this.texbuf[i] = frame[j]
+    }
+  }
+
+  push(frame) {
+    this.head = (this.head + 1) & MASK
+
+    if (this.size < CAPACITY) {
+      this.size++
+    } else {
+      this.tail = (this.tail + 1) & MASK
+    }
+
+    this._copyright(frame)
+    for (let [ctx, tex] of this.bufs) {
+      ctx.bindTexture(ctx.TEXTURE_2D, tex)
+      ctx.texSubImage2D(ctx.TEXTURE_2D, 0, this.head, 0, 1, FRAME_SIZE,
+        ctx.RGBA, ctx.FLOAT, this.texbuf)
+    }
+  }
+
+  range() {
+    return [this.head, this.tail]
+  }
+
+  texture(n) {
+    const [_, tex] = this.bufs[n]
+    return tex
+  }
+}
+
+const FILE = 'faycarsons.github.io/afxgrab/afx_im-self-employed.mp3'
+
+const AUDIO_CTX = new AudioContext()
+const analyser = AUDIO_CTX.createAnalyser()
+analyser.fftSize = FRAME_SIZE * 2
+
+async function getAudioFile() {
+  const res = await fetch(FILE)
+  const arrayBuffer = await res.arrayBuffer()
+  const audioBuffer = await AUDIO_CTX.decodeAudioData(arrayBuffer)
+  return audioBuffer
+}
+
+function replaceDefines(text, defines) {
+  return text.replace(/#define\s+(\w+)\s+%/g, (match, name) => {
+    return `#define ${name} ${defines[name]}`
+  })
+}
+
+async function loadShaders() {
+  const constants = {NUM_FRAMES, FRAME_SIZE, MASK}
+
+  const bar = replaceDefines(fragBar, constants)
+  const spectrogram = replaceDefines(fragSpectral, constants)
+
+  return [vert, bar, spectrogram]
+}
+
+function render(state) {
+  updateSpectralData(state.spectralManager)
+
+  const [head, tail] = state.spectralManager.frames.range()
+  state.uniforms.head = head
+  state.uniforms.tail = tail
+
+  renderShader(state.barCtx.glBar, state.barCtx.barProgram, state.uniforms, state.spectralManager.frames.texture(0))
+  renderShader(state.spectralCtx.glSpectral, state.spectralCtx.spectrogramProgram, state.uniforms, state.spectralManager.frames.texture(1))
+  requestAnimationFrame(() => render(state))
+}
+
+function updateSpectralData({scratch, scratchBytes, frames}) {
+  analyser.getByteFrequencyData(scratchBytes)
+  for (let i = 0; i < FRAME_SIZE; ++i)
+    scratch[i] = scratchBytes[i] / 255.
+
+  frames.push(scratch)
+}
+
+function renderShader(gl, program, uniforms, texture) {
+  uniforms.size = [gl.canvas.width, gl.canvas.height]
+  gl.viewport(0, 0, uniforms.size[0], uniforms.size[1])
+
+  gl.useProgram(program.program)
+  twgl.setUniforms(program, {...uniforms, frames: texture})
+  gl.drawArrays(gl.TRIANGLES, 0, 3)
+}
+
+async function init() {
+  console.log('init!')
+  await AUDIO_CTX.resume()
+
+  if ((CAPACITY & CAPACITY - 1) !== 0) {
+    alert("Capacity must be a power of two")
+    return
+  }
+
+
+  const glBar = document.getElementById('bar').getContext('webgl2')
+  const glSpectral = document.getElementById('spectral').getContext('webgl2')
+
+  if (!(glBar && glSpectral)) {
+    alert("Cannot find a canvas, idx which one ")
+  }
+
+  console.log("Created contexts")
+
+  const [vert, bar, spectrogram] = await loadShaders()
+  const barProgram = twgl.createProgramInfo(glBar, [vert, bar])
+  const spectrogramProgram = twgl.createProgramInfo(glSpectral, [vert, spectrogram])
+
+  const size = [window.innerWidth, window.innerHeight]
+
+  const init = new Float32Array(CAPACITY * 4, () => 0)
+
+  const frames = new RingBuffer(
+    [
+      glBar,
+      twgl.createTexture(glBar, {
+        width: NUM_FRAMES,
+        height: FRAME_SIZE,
+        src: init,
+        format: glBar.RGBA,
+        type: glBar.FLOAT,
+        min: glBar.NEAREST,
+        mag: glBar.NEAREST,
+        internalFormat: glBar.RGBA32F
+      })
+    ],
+    [
+      glSpectral,
+      twgl.createTexture(glSpectral, {
+        width: NUM_FRAMES,
+        height: FRAME_SIZE,
+        src: init,
+        format: glSpectral.RGBA,
+        type: glSpectral.FLOAT,
+        min: glSpectral.NEAREST,
+        mag: glSpectral.NEAREST,
+        internalFormat: glSpectral.RGBA32F
+      })
+    ]
+  )
+
+  const scratch = new Float32Array(FRAME_SIZE)
+  const scratchBytes = new Uint8Array(FRAME_SIZE)
+  const uniforms = {size, frames: frames.buf, write: frames.write, read: frames.read}
+
+  const spectralManager = {
+    scratch,
+    scratchBytes,
+    frames
+  }
+
+  const barCtx = {
+    glBar,
+    barProgram,
+  }
+
+  const spectralCtx = {
+    glSpectral,
+    spectrogramProgram,
+  }
+
+  const state = {
+    spectralManager,
+    barCtx,
+    spectralCtx,
+    uniforms
+  }
+
+  render(state)
+}
+
+// Playback button
+
+const PlaybackButton = class {
+  constructor() {
+    this.button = document.querySelector('.play-button')
+    this.playIcon = document.querySelector('.play-icon')
+    this.pauseIcon = document.querySelector('.pause-icon')
+    this.waveform = document.querySelector('.waveform')
+    this.durationElement = document.querySelector('.duration')
+    this.title = document.querySelector('.title')
+
+    this.title.textContent = 'AFX - I\'m self employed'
+
+    this.isPlaying = false
+    this.playPosition = 0
+
+    getAudioFile()
+      .then(audioBuffer => {
+        this.source = AUDIO_CTX.createBufferSource()
+        this.source.buffer = audioBuffer
+        this.source.connect(analyser)
+
+        analyser.connect(AUDIO_CTX.destination)
+
+        this.setupAudioInfo()
+        this.setupWaveform()
+        console.log(this.button)
+        this.button.addEventListener('click', (e) => {
+          e.stopPropagation()
+          this.togglePlayback()
+          console.log('CLICKED')
+          debugger
+        })
+      })
+      .catch(fail)
+  }
+
+  togglePlayback() {
+    this.isPlaying = !this.isPlaying
+    this.playIcon.classList.toggle('hidden')
+    this.pauseIcon.classList.toggle('hidden')
+
+    if (this.isPlaying) {
+      this.startPlayback()
+    } else {
+      this.stopPlayback()
+    }
+  }
+
+  startPlayback() {
+    if (!Boolean(this.shadersRunning)) {
+      init()
+      this.shadersRunning = true
+    }
+
+    getAudioFile()
+      .then(audioBuffer => {
+        this.source = AUDIO_CTX.createBufferSource()
+        this.source.buffer = audioBuffer
+        this.source.connect(analyser)
+
+        analyser.connect(AUDIO_CTX.destination)
+
+        this.source.start(0)
+        this.isPlaying = true
+      })
+      .catch(fail)
+  }
+
+  stopPlayback() {
+    this.isPlaying = false
+
+    this.source.stop()
+    this.source = null
+
+    this.playIcon.classList.remove('hidden')
+    this.pauseIcon.classList.add('hidden')
+  }
+
+  setupAudioInfo() {
+    const duration = this.source.buffer.duration
+
+    const minutes = Math.floor(duration / 60)
+    const seconds = Math.floor(duration % 60)
+
+    this.durationElement.textContent = `${minutes}:${seconds.toString().padStart(2, '0')}`
+  }
+
+  setupWaveform() {
+    const left = this.source.buffer.getChannelData(0)
+    const right = this.source.buffer.getChannelData(1)
+    const rawData = Array.from({length: left.length}, (_, idx) => (left[idx] + right[idx]) / 2)
+
+    this.bars = 128
+    this.samplesPerBar = Math.floor(rawData.length / this.bars)
+
+    for (let i = 0; i < this.bars; ++i) {
+      const start = i * this.samplesPerBar
+
+      let sum = 0
+
+      for (let j = 0; j < this.samplesPerBar; ++j) {
+        sum += Math.abs(rawData[start + j])
+      }
+
+      const avg = sum / this.samplesPerBar
+      const bar = document.createElement('div')
+      bar.className = 'waveform-bar'
+      const height = Math.min(avg * 100 * 3, 80)
+      bar.style.height = `${height}%`
+      this.waveform.appendChild(bar)
+    }
+  }
+}
+
+new PlaybackButton()
+console.log('STARTED')
