@@ -232,14 +232,12 @@ const RingBuffer = class {
   }
 }
 
-const FILE = 'faycarsons.github.io/afxgrab/afx_im-self-employed.mp3'
-
 const AUDIO_CTX = new AudioContext()
 const analyser = AUDIO_CTX.createAnalyser()
 analyser.fftSize = FRAME_SIZE * 2
 
 async function getAudioFile() {
-  const res = await fetch(FILE)
+  const res = await fetch(new URL('https://faycarsons.github.io/afxgrab/afx_im-self-employed.mp3', window.location.href).href)
   const arrayBuffer = await res.arrayBuffer()
   const audioBuffer = await AUDIO_CTX.decodeAudioData(arrayBuffer)
   return audioBuffer
