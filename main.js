@@ -237,7 +237,7 @@ const analyser = AUDIO_CTX.createAnalyser()
 analyser.fftSize = FRAME_SIZE * 2
 
 async function getAudioFile() {
-  const res = await fetch(new URL('https://faycarsons.github.io/afxgrab/afx_im-self-employed.mp3', window.location.href).href)
+  const res = await fetch('https://faycarsons.github.io/afxgrab/afx_im-self-employed.mp3')
   const arrayBuffer = await res.arrayBuffer()
   const audioBuffer = await AUDIO_CTX.decodeAudioData(arrayBuffer)
   return audioBuffer
