@@ -404,7 +404,6 @@ const PlaybackButton = class {
           e.stopPropagation()
           this.togglePlayback()
           console.log('CLICKED')
-          debugger
         })
       })
       .catch(fail)
